@@ -976,6 +976,21 @@
           }
         },
         {
+          "id": "check_update",
+          "element": "button",
+          "label": "TRANSLATE.UPDATE_BUTTON",
+          "doc": "TRANSLATE.UPDATE_BUTTON_DOC",
+          "onClick": {
+            "type": "emit",
+            "message": "callMethod",
+            "data": {
+              "endpoint": "music_service/ai_autopilot",
+              "method": "checkForUpdate",
+              "data": {}
+            }
+          }
+        },
+        {
           "id": "open_remote",
           "element": "button",
           "label": "TRANSLATE.OPEN_REMOTE",
