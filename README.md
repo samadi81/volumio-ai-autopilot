@@ -42,6 +42,10 @@ Or use the included helper:
 
 After install, enable the plugin via **Plugins → Installed Plugins → AI Autopilot**.
 
+### Remote panel (phone/browser)
+
+The plugin serves a standalone remote at **`http://<volumio-ip>:3001/`** (port set by `http_api_port`). Open it in any browser — outside the Volumio app — to see the **now-playing track with album art**, the **current queue**, and **quick settings** you can change on the fly without opening the plugin menu: autopilot on/off, energy range, mood (prompt preset), and LLM provider/model. 👍/👎/⏭ are there too. On iOS Safari, **Share → Add to Home Screen** turns it into a one-tap app.
+
 ### Updating
 
 After the first install you can update without SSH: open plugin settings → **Actions → "Check for updates"**. This pulls the latest code from GitHub's `main` branch and installs it in place, keeping your history, feedback, prompts, and API keys. Disable and re-enable the plugin (or restart Volumio) afterward to load the new code.

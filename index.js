@@ -1014,6 +1014,164 @@ AiAutopilot.prototype.configSnapshot = function () {
   };
 };
 
+// ---------- Quick remote panel (served by lib/http-api.js) ----------
+
+// Recompute the effective llm_model / llm_api_key for the current provider.
+// Mirrors the resolution done in saveRecommenderSettings.
+AiAutopilot.prototype._resolveEffectiveLlm = function () {
+  const self = this;
+  const provider = self.config.get('llm_provider', 'anthropic');
+  const customModel = (self.config.get('llm_model_custom', '') || '').trim();
+  const preset = (self.config.get('llm_model_' + provider, '') || '').trim();
+  self.config.set('llm_model', customModel || preset);
+  self.config.set('llm_api_key', self.config.get('llm_api_key_' + provider, '') || '');
+};
+
+// Apply a prompt preset (respecting its selected sub-variant) into llm_system_prompt,
+// without a toast. Used by the quick panel. Returns true if the preset exists.
+AiAutopilot.prototype._applyPromptPresetById = function (id) {
+  const self = this;
+  const parent = Presets.PROMPTS.find((p) => p.id === id);
+  if (!parent) return false;
+  const subId = self.config.get('prompt_sub_' + id, '');
+  const sub = subId && parent.subs && parent.subs.find((s) => s.id === subId);
+  self.config.set('prompt_preset_selected', id);
+  self.config.set('llm_system_prompt', sub ? sub.text : parent.text);
+  return true;
+};
+
+// Read option lists straight from UIConfig.json so the panel never drifts from
+// the main settings form. Cached after first read.
+AiAutopilot.prototype._uiOptions = function (fieldId) {
+  const self = this;
+  try {
+    if (!self._uiconfCache) {
+      self._uiconfCache = fs.readJsonSync(path.join(__dirname, 'UIConfig.json'));
+    }
+    for (const section of (self._uiconfCache.sections || [])) {
+      const field = (section.content || []).find((c) => c.id === fieldId);
+      if (field && field.options) return field.options.map((o) => ({ value: o.value, label: o.label }));
+    }
+  } catch (e) {}
+  return [];
+};
+
+// Snapshot of everything the remote panel renders: now-playing, queue, feedback
+// counts, the quick-editable settings, and their option lists.
+AiAutopilot.prototype.getQuickState = function () {
+  const self = this;
+
+  let state = null;
+  let queue = [];
+  try { state = self.commandRouter.volumioGetState(); } catch (e) {}
+  try {
+    queue = self.commandRouter.volumioGetQueue() || [];
+  } catch (e) {
+    try { queue = self.commandRouter.stateMachine.getQueue() || []; } catch (e2) { queue = []; }
+  }
+
+  const track = state && (state.uri || state.title) ? {
+    title: state.title || '',
+    artist: state.artist || '',
+    album: state.album || '',
+    albumart: state.albumart || '',
+    uri: state.uri || '',
+    duration: Number(state.duration) || 0,
+    seek: Number(state.seek) || 0,
+    status: state.status || ''
+  } : null;
+
+  const pos = state && typeof state.position === 'number' ? state.position : -1;
+  const queueOut = (queue || []).map((q, i) => ({
+    title: q.name || q.title || '',
+    artist: q.artist || '',
+    albumart: q.albumart || '',
+    uri: q.uri || '',
+    current: i === pos
+  }));
+
+  let counts = { likes: 0, dislikes: 0 };
+  if (self.feedback) {
+    const snap = self.feedback.snapshot({ maxLikes: 1000, maxDislikes: 1000 });
+    counts = { likes: snap.likes.length, dislikes: snap.dislikes.length };
+  }
+
+  const provider = self.config.get('llm_provider', 'anthropic');
+  let eMin = Number(self.config.get('energy_min', 0));
+  let eMax = Number(self.config.get('energy_max', 10));
+  if (!Number.isFinite(eMin)) eMin = 0;
+  if (!Number.isFinite(eMax)) eMax = 10;
+
+  const providers = self._uiOptions('llm_provider');
+  const models = {};
+  providers.forEach((p) => { models[p.value] = self._uiOptions('llm_model_' + p.value); });
+
+  return {
+    ok: true,
+    track,
+    queue: queueOut,
+    counts,
+    settings: {
+      enabled: !!self.config.get('enabled', true),
+      energy_min: eMin,
+      energy_max: eMax,
+      prompt_preset_selected: self.config.get('prompt_preset_selected', 'default'),
+      llm_provider: provider,
+      llm_model: (self.config.get('llm_model_' + provider, '') || '').trim(),
+      has_key: provider === 'ollama' || !!((self.config.get('llm_api_key_' + provider, '') || '').trim())
+    },
+    options: {
+      providers,
+      models,
+      prompts: Presets.PROMPTS.map((p) => ({ value: p.id, label: p.name }))
+    }
+  };
+};
+
+// Apply a partial settings change from the remote panel, persist it, and return
+// the fresh state. Only known keys are honored.
+AiAutopilot.prototype.applyQuickChange = function (patch) {
+  const self = this;
+  patch = patch || {};
+  let triggerDirty = false;
+
+  if (patch.enabled !== undefined) {
+    self.config.set('enabled', !!patch.enabled);
+    triggerDirty = true;
+  }
+
+  if (patch.energy_min !== undefined || patch.energy_max !== undefined) {
+    const clamp = (n, d) => {
+      n = Number(n);
+      if (!Number.isFinite(n)) n = d;
+      return Math.max(0, Math.min(10, n));
+    };
+    let lo = patch.energy_min !== undefined ? clamp(patch.energy_min, 0) : clamp(self.config.get('energy_min', 0), 0);
+    let hi = patch.energy_max !== undefined ? clamp(patch.energy_max, 10) : clamp(self.config.get('energy_max', 10), 10);
+    if (lo > hi) { const t = lo; lo = hi; hi = t; }
+    self.config.set('energy_min', lo);
+    self.config.set('energy_max', hi);
+  }
+
+  if (patch.prompt_preset_selected !== undefined) {
+    self._applyPromptPresetById(String(patch.prompt_preset_selected));
+  }
+
+  if (patch.llm_provider !== undefined) {
+    self.config.set('llm_provider', String(patch.llm_provider));
+    self._resolveEffectiveLlm();
+  }
+
+  if (patch.llm_model !== undefined) {
+    const provider = self.config.get('llm_provider', 'anthropic');
+    self.config.set('llm_model_' + provider, String(patch.llm_model));
+    self._resolveEffectiveLlm();
+  }
+
+  if (triggerDirty) self.applyTriggerConfig();
+  return self.getQuickState();
+};
+
 AiAutopilot.prototype.log = function (msg) {
   const verbose = this.config && this.config.get('verbose_log', false);
   if (verbose) this.logger.info('[ai_autopilot] ' + msg);
