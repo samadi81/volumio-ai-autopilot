@@ -42,6 +42,10 @@ Or use the included helper:
 
 After install, enable the plugin via **Plugins → Installed Plugins → AI Autopilot**.
 
+### Updating
+
+After the first install you can update without SSH: open plugin settings → **Actions → "Check for updates"**. This pulls the latest code from GitHub's `main` branch and installs it in place, keeping your history, feedback, prompts, and API keys. Disable and re-enable the plugin (or restart Volumio) afterward to load the new code.
+
 ## Configuration
 
 Open plugin settings:

@@ -402,6 +402,38 @@ AiAutopilot.prototype.clearHistory = function () {
   return libQ.resolve({});
 };
 
+AiAutopilot.prototype.checkForUpdate = function () {
+  const self = this;
+  const defer = libQ.defer();
+  const updater = require('./lib/updater');
+
+  self.commandRouter.pushToastMessage('info', 'AI Autopilot', self.t('UPDATE_CHECKING'));
+
+  updater.update({
+    pluginDir: __dirname,
+    currentSha: self.config.get('installed_sha', ''),
+    logger: self.logger
+  }).then((r) => {
+    if (!r.updated) {
+      self.commandRouter.pushToastMessage('success', 'AI Autopilot', self.t('UPDATE_UP_TO_DATE'));
+    } else {
+      self.config.set('installed_sha', r.toSha);
+      self.logger.info('[ai_autopilot] updated ' + r.fromSha + ' -> ' + r.toSha +
+        ' (depsChanged=' + r.depsChanged + ')');
+      self.commandRouter.pushToastMessage('success', 'AI Autopilot',
+        self.t('UPDATE_DONE').replace('{{sha}}', (r.toSha || '').slice(0, 7)));
+    }
+    defer.resolve({});
+  }).catch((e) => {
+    self.logger.error('[ai_autopilot] update error: ' + ((e && e.stack) || e));
+    self.commandRouter.pushToastMessage('error', 'AI Autopilot',
+      self.t('UPDATE_FAILED').replace('{{err}}', (e && e.message) || String(e)));
+    defer.resolve({});
+  });
+
+  return defer.promise;
+};
+
 AiAutopilot.prototype.exportPromptsToFile = function () {
   const self = this;
   try {
