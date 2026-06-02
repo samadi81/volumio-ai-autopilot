@@ -163,20 +163,62 @@ class LLMRecommender extends Base {
   async _callGemini({ apiKey, model, system, userPrompt, baseUrl }) {
     const url = baseUrl.replace(/\/$/, '') +
       '/models/' + encodeURIComponent(model) + ':generateContent?key=' + encodeURIComponent(apiKey);
+
+    // generationConfig:
+    //  - responseMimeType/responseSchema force a clean JSON object so parsing is reliable.
+    //  - maxOutputTokens is generous because Gemini 2.5 "thinking" models spend part of the
+    //    budget on internal reasoning; a small cap makes them stop with empty text
+    //    (finishReason MAX_TOKENS) and produce no answer at all.
+    const generationConfig = {
+      maxOutputTokens: 2048,
+      temperature: 0.8,
+      responseMimeType: 'application/json',
+      responseSchema: {
+        type: 'object',
+        properties: {
+          artist: { type: 'string' },
+          title: { type: 'string' }
+        },
+        required: ['artist', 'title']
+      }
+    };
+
+    // For 2.5 "flash" thinking models, disable thinking so the whole budget goes to the
+    // answer (and responses are faster). gemini-2.5-pro can't disable thinking, so it just
+    // relies on the larger token budget above.
+    if (/2\.5-flash|flash-lite/i.test(model)) {
+      generationConfig.thinkingConfig = { thinkingBudget: 0 };
+    }
+
     const res = await fetch(url, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         systemInstruction: { parts: [{ text: system }] },
         contents: [{ role: 'user', parts: [{ text: userPrompt }] }],
-        generationConfig: { maxOutputTokens: 200, temperature: 0.8 }
+        generationConfig
       })
     });
     if (!res.ok) throw new Error('Gemini API ' + res.status + ': ' + (await res.text()));
     const data = await res.json();
+
+    // Surface request-level blocks (e.g. safety filters on the prompt) with a clear reason.
+    if (data.promptFeedback && data.promptFeedback.blockReason) {
+      throw new Error('Gemini blocked the request: ' + data.promptFeedback.blockReason);
+    }
+
     const cand = (data.candidates && data.candidates[0]) || null;
-    const part = cand && cand.content && cand.content.parts && cand.content.parts[0];
-    return part ? (part.text || '') : '';
+    const parts = (cand && cand.content && cand.content.parts) || [];
+    const text = parts.map((p) => (p && p.text) || '').join('').trim();
+    if (text) return text;
+
+    // No usable text — explain why instead of bubbling up an empty "unparseable" error.
+    const reason = cand && cand.finishReason ? cand.finishReason : 'unknown';
+    if (reason === 'MAX_TOKENS') {
+      throw new Error('Gemini hit the output token limit before returning an answer ' +
+        '(finishReason=MAX_TOKENS). Try a non-thinking model such as gemini-2.0-flash.');
+    }
+    throw new Error('Gemini returned no text content (finishReason=' + reason + ').');
   }
 
   async _callOpenAICompat({ apiKey, model, system, userPrompt, baseUrl, extraHeaders, noKey }) {
@@ -206,15 +248,27 @@ class LLMRecommender extends Base {
 
   _parse(text) {
     if (!text) return null;
-    const match = text.match(/\{[\s\S]*?\}/);
-    if (!match) return null;
-    try {
-      const obj = JSON.parse(match[0]);
-      if (obj && obj.title) {
-        return { artist: (obj.artist || '').toString().trim(), title: obj.title.toString().trim() };
+
+    // Strip markdown code fences some models wrap JSON in (```json ... ```).
+    let cleaned = text.replace(/```(?:json)?\s*([\s\S]*?)```/gi, '$1').trim();
+
+    // Try a few candidates: the whole string, then the widest {...} span, then the first
+    // balanced {...}. The first that parses into an object with a title wins.
+    const candidates = [cleaned];
+    const wide = cleaned.match(/\{[\s\S]*\}/);     // greedy: full object even when nested
+    if (wide) candidates.push(wide[0]);
+    const narrow = cleaned.match(/\{[\s\S]*?\}/);  // lazy: first flat object
+    if (narrow) candidates.push(narrow[0]);
+
+    for (const candidate of candidates) {
+      try {
+        const obj = JSON.parse(candidate);
+        if (obj && obj.title) {
+          return { artist: (obj.artist || '').toString().trim(), title: obj.title.toString().trim() };
+        }
+      } catch (e) {
+        // try the next candidate
       }
-    } catch (e) {
-      return null;
     }
     return null;
   }
