@@ -1212,6 +1212,10 @@ AiAutopilot.prototype.playerControl = function (action, value) {
     if (!Number.isFinite(v)) v = 0;
     cmd = 'volume&volume=' + v;
   }
+  else if (action === 'playindex') {
+    const n = parseInt(value, 10);
+    if (Number.isFinite(n) && n >= 0) cmd = 'play&N=' + n;
+  }
   if (!cmd) return libQ.resolve(self.getQuickState());
 
   const fetch = require('node-fetch');
