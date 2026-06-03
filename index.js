@@ -72,7 +72,7 @@ AiAutopilot.prototype.onStart = function () {
     // HTTP API for one-tap like/dislike from phone/browser
     self.httpApi = new HttpApi({
       plugin: self,
-      port: Number(self.config.get('http_api_port', 3001)) || 0,
+      port: Number(self.config.get('http_api_port', 8488)) || 0,
       logger: self.logger
     });
     self.httpApi.start();
@@ -165,7 +165,7 @@ AiAutopilot.prototype.getUIConfig = function () {
       setField(0, 'trigger_mode', self.config.get('trigger_mode', 'keep_ahead'));
       setField(0, 'keep_ahead_count', self.config.get('keep_ahead_count', 3));
       setField(0, 'cooldown_sec', self.config.get('cooldown_sec', 5));
-      setField(0, 'http_api_port', self.config.get('http_api_port', 3001));
+      setField(0, 'http_api_port', self.config.get('http_api_port', 8488));
       setField(0, 'history_window', self.config.get('history_window', 20));
       setField(0, 'avoid_same_album_window', self.config.get('avoid_same_album_window', 10));
       setField(0, 'avoid_same_artist_window', self.config.get('avoid_same_artist_window', 0));
@@ -252,8 +252,16 @@ AiAutopilot.prototype.getUIConfig = function () {
             });
           });
         } catch (e) {}
-        const port = Number(self.config.get('http_api_port', 3001)) || 3001;
-        openRemoteBtn.onClick.url = 'http://' + (host || 'volumio.local') + ':' + port + '/';
+        // Prefer the port the HTTP server actually bound to (it may have moved off a
+        // busy port), then fall back to the configured value.
+        const port = (self.httpApi && self.httpApi.actualPort) ||
+          Number(self.config.get('http_api_port', 8488)) || 8488;
+        const remoteUrl = 'http://' + (host || 'volumio.local') + ':' + port + '/';
+        openRemoteBtn.onClick.url = remoteUrl;
+        // Show the URL as text too — the in-app button can't always hand off to an
+        // external browser (iOS), so the user can copy/open this in Safari directly.
+        openRemoteBtn.doc = (openRemoteBtn.doc ? openRemoteBtn.doc + '  ' : '') +
+          'Safari: ' + remoteUrl;
       }
       setField(1, 'lastfm_api_key', self.config.get('lastfm_api_key', ''));
       setField(1, 'lastfm_user', self.config.get('lastfm_user', ''));
@@ -286,7 +294,7 @@ AiAutopilot.prototype.saveGeneralSettings = function (data) {
 
   // restart HTTP API if the port changed
   if (self.httpApi) {
-    const newPort = Number(self.config.get('http_api_port', 3001)) || 0;
+    const newPort = Number(self.config.get('http_api_port', 8488)) || 0;
     if (newPort !== self.httpApi.port) {
       self.httpApi.stop();
       self.httpApi.port = newPort;
@@ -523,7 +531,7 @@ AiAutopilot.prototype.showRemoteUrl = function () {
       });
     });
   } catch (e) {}
-  const port = Number(self.config.get('http_api_port', 3001)) || 3001;
+  const port = Number(self.config.get('http_api_port', 8488)) || 8488;
   const urlStr = 'http://' + (host || 'volumio.local') + ':' + port + '/';
   self.logger.info('[ai_autopilot] Remote URL: ' + urlStr);
   const msg = self.t('REMOTE_URL_TOAST').replace('{{url}}', urlStr);
@@ -1091,10 +1099,24 @@ AiAutopilot.prototype.getQuickState = function () {
   }));
 
   let counts = { likes: 0, dislikes: 0 };
+  let likesList = [];
   if (self.feedback) {
     const snap = self.feedback.snapshot({ maxLikes: 1000, maxDislikes: 1000 });
     counts = { likes: snap.likes.length, dislikes: snap.dislikes.length };
+    likesList = self.feedback.snapshot({ maxLikes: 30, maxDislikes: 0 }).likes
+      .map((it) => ({ artist: it.artist || '', title: it.title || '' }));
   }
+
+  let volume = null;
+  if (state && state.volume !== undefined && state.volume !== null) {
+    const v = Number(state.volume);
+    if (Number.isFinite(v)) volume = v;
+  }
+  const player = {
+    status: (state && state.status) || 'stop',
+    volume: volume,
+    mute: !!(state && state.mute)
+  };
 
   const provider = self.config.get('llm_provider', 'anthropic');
   let eMin = Number(self.config.get('energy_min', 0));
@@ -1109,8 +1131,10 @@ AiAutopilot.prototype.getQuickState = function () {
   return {
     ok: true,
     track,
+    player,
     queue: queueOut,
     counts,
+    likes: likesList,
     settings: {
       enabled: !!self.config.get('enabled', true),
       energy_min: eMin,
@@ -1170,6 +1194,37 @@ AiAutopilot.prototype.applyQuickChange = function (patch) {
 
   if (triggerDirty) self.applyTriggerConfig();
   return self.getQuickState();
+};
+
+// Transport / volume control from the remote panel. Driven through Volumio's own
+// REST command API on localhost:3000 (the same endpoint the search fallback uses),
+// which is more stable across Volumio versions than the in-process methods.
+AiAutopilot.prototype.playerControl = function (action, value) {
+  const self = this;
+  let cmd = null;
+  if (action === 'toggle')      cmd = 'toggle';
+  else if (action === 'play')   cmd = 'play';
+  else if (action === 'pause')  cmd = 'pause';
+  else if (action === 'next')   cmd = 'next';
+  else if (action === 'prev')   cmd = 'prev';
+  else if (action === 'volume') {
+    let v = Math.max(0, Math.min(100, Number(value)));
+    if (!Number.isFinite(v)) v = 0;
+    cmd = 'volume&volume=' + v;
+  }
+  if (!cmd) return libQ.resolve(self.getQuickState());
+
+  const fetch = require('node-fetch');
+  const url = 'http://localhost:3000/api/v1/commands/?cmd=' + cmd;
+  const defer = libQ.defer();
+  Promise.resolve()
+    .then(() => fetch(url))
+    .then(() => { defer.resolve(self.getQuickState()); })
+    .catch((e) => {
+      self.logger.error('[ai_autopilot] playerControl ' + action + ' error: ' + (e && e.message));
+      defer.resolve(self.getQuickState());
+    });
+  return defer.promise;
 };
 
 AiAutopilot.prototype.log = function (msg) {
