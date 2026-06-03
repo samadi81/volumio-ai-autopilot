@@ -410,36 +410,44 @@ AiAutopilot.prototype.clearHistory = function () {
   return libQ.resolve({});
 };
 
-AiAutopilot.prototype.checkForUpdate = function () {
+// Core updater used by both the settings button and the remote panel.
+// Resolves to { ok, updated, message } and never rejects.
+AiAutopilot.prototype._performUpdate = function () {
   const self = this;
-  const defer = libQ.defer();
   const updater = require('./lib/updater');
-
-  self.commandRouter.pushToastMessage('info', 'AI Autopilot', self.t('UPDATE_CHECKING'));
-
-  updater.update({
+  return updater.update({
     pluginDir: __dirname,
     currentSha: self.config.get('installed_sha', ''),
     logger: self.logger
   }).then((r) => {
     if (!r.updated) {
-      self.commandRouter.pushToastMessage('success', 'AI Autopilot', self.t('UPDATE_UP_TO_DATE'));
-    } else {
-      self.config.set('installed_sha', r.toSha);
-      self.logger.info('[ai_autopilot] updated ' + r.fromSha + ' -> ' + r.toSha +
-        ' (depsChanged=' + r.depsChanged + ')');
-      self.commandRouter.pushToastMessage('success', 'AI Autopilot',
-        self.t('UPDATE_DONE').replace('{{sha}}', (r.toSha || '').slice(0, 7)));
+      return { ok: true, updated: false, message: self.t('UPDATE_UP_TO_DATE') };
     }
-    defer.resolve({});
+    self.config.set('installed_sha', r.toSha);
+    self.logger.info('[ai_autopilot] updated ' + r.fromSha + ' -> ' + r.toSha +
+      ' (depsChanged=' + r.depsChanged + ')');
+    return { ok: true, updated: true, message: self.t('UPDATE_DONE').replace('{{sha}}', (r.toSha || '').slice(0, 7)) };
   }).catch((e) => {
     self.logger.error('[ai_autopilot] update error: ' + ((e && e.stack) || e));
-    self.commandRouter.pushToastMessage('error', 'AI Autopilot',
-      self.t('UPDATE_FAILED').replace('{{err}}', (e && e.message) || String(e)));
+    return { ok: false, updated: false, message: self.t('UPDATE_FAILED').replace('{{err}}', (e && e.message) || String(e)) };
+  });
+};
+
+AiAutopilot.prototype.checkForUpdate = function () {
+  const self = this;
+  const defer = libQ.defer();
+  self.commandRouter.pushToastMessage('info', 'AI Autopilot', self.t('UPDATE_CHECKING'));
+  self._performUpdate().then((res) => {
+    self.commandRouter.pushToastMessage(res.ok ? 'success' : 'error', 'AI Autopilot', res.message);
     defer.resolve({});
   });
-
   return defer.promise;
+};
+
+// Remote-panel entry point: returns the result object directly (for a toast in
+// the web UI) instead of pushing a Volumio toast.
+AiAutopilot.prototype.remoteUpdate = function () {
+  return this._performUpdate();
 };
 
 AiAutopilot.prototype.exportPromptsToFile = function () {
@@ -1058,10 +1066,27 @@ AiAutopilot.prototype._uiOptions = function (fieldId) {
     }
     for (const section of (self._uiconfCache.sections || [])) {
       const field = (section.content || []).find((c) => c.id === fieldId);
-      if (field && field.options) return field.options.map((o) => ({ value: o.value, label: o.label }));
+      if (field && field.options) {
+        return field.options.map((o) => ({
+          value: o.value,
+          label: (typeof o.label === 'string' && o.label.indexOf('TRANSLATE.') === 0)
+            ? self.t(o.label.slice('TRANSLATE.'.length))
+            : o.label
+        }));
+      }
     }
   } catch (e) {}
   return [];
+};
+
+// Apply a hint preset into llm_hints, without a toast. Used by the remote panel.
+AiAutopilot.prototype._applyHintPresetById = function (id) {
+  const self = this;
+  const preset = Presets.HINTS.find((h) => h.id === id);
+  if (!preset) return false;
+  self.config.set('hint_preset_selected', id);
+  self.config.set('llm_hints', preset.text || '');
+  return true;
 };
 
 // Snapshot of everything the remote panel renders: now-playing, queue, feedback
@@ -1128,6 +1153,14 @@ AiAutopilot.prototype.getQuickState = function () {
   const models = {};
   providers.forEach((p) => { models[p.value] = self._uiOptions('llm_model_' + p.value); });
 
+  // Per-parent sub-variant option lists (so the panel can repopulate when mood changes).
+  const promptSubs = {};
+  Presets.PROMPTS.forEach((p) => {
+    promptSubs[p.id] = [{ value: '', label: '(기본)' }]
+      .concat((p.subs || []).map((s) => ({ value: s.id, label: s.name })));
+  });
+  const promptId = self.config.get('prompt_preset_selected', 'default');
+
   return {
     ok: true,
     track,
@@ -1139,15 +1172,33 @@ AiAutopilot.prototype.getQuickState = function () {
       enabled: !!self.config.get('enabled', true),
       energy_min: eMin,
       energy_max: eMax,
-      prompt_preset_selected: self.config.get('prompt_preset_selected', 'default'),
+      // recommender / LLM
       llm_provider: provider,
       llm_model: (self.config.get('llm_model_' + provider, '') || '').trim(),
-      has_key: provider === 'ollama' || !!((self.config.get('llm_api_key_' + provider, '') || '').trim())
+      has_key: provider === 'ollama' || !!((self.config.get('llm_api_key_' + provider, '') || '').trim()),
+      // prompt-related
+      prompt_preset_selected: promptId,
+      prompt_sub_selected: self.config.get('prompt_sub_' + promptId, ''),
+      hint_preset_selected: self.config.get('hint_preset_selected', 'none'),
+      llm_system_prompt: self.config.get('llm_system_prompt', '') || '',
+      llm_hints: self.config.get('llm_hints', '') || '',
+      // general
+      source: self.config.get('source', 'auto'),
+      trigger_mode: self.config.get('trigger_mode', 'keep_ahead'),
+      keep_ahead_count: Number(self.config.get('keep_ahead_count', 3)),
+      cooldown_sec: Number(self.config.get('cooldown_sec', 5)),
+      history_window: Number(self.config.get('history_window', 20)),
+      avoid_same_album_window: Number(self.config.get('avoid_same_album_window', 10)),
+      avoid_same_artist_window: Number(self.config.get('avoid_same_artist_window', 0))
     },
     options: {
       providers,
       models,
-      prompts: Presets.PROMPTS.map((p) => ({ value: p.id, label: p.name }))
+      prompts: Presets.PROMPTS.map((p) => ({ value: p.id, label: p.name })),
+      promptSubs,
+      hints: Presets.HINTS.map((h) => ({ value: h.id, label: h.name })),
+      sources: self._uiOptions('source'),
+      triggerModes: self._uiOptions('trigger_mode')
     }
   };
 };
@@ -1190,6 +1241,55 @@ AiAutopilot.prototype.applyQuickChange = function (patch) {
     const provider = self.config.get('llm_provider', 'anthropic');
     self.config.set('llm_model_' + provider, String(patch.llm_model));
     self._resolveEffectiveLlm();
+  }
+
+  // --- prompt-related ---
+  // Sub-variant for the currently-selected parent preset; re-apply so the
+  // effective system prompt updates to the chosen variant.
+  if (patch.prompt_sub_selected !== undefined) {
+    const parent = self.config.get('prompt_preset_selected', 'default');
+    self.config.set('prompt_sub_' + parent, String(patch.prompt_sub_selected));
+    self._applyPromptPresetById(parent);
+  }
+  if (patch.hint_preset_selected !== undefined) {
+    self._applyHintPresetById(String(patch.hint_preset_selected));
+  }
+  if (patch.llm_system_prompt !== undefined) {
+    self.config.set('llm_system_prompt', String(patch.llm_system_prompt));
+  }
+  if (patch.llm_hints !== undefined) {
+    self.config.set('llm_hints', String(patch.llm_hints));
+  }
+
+  // --- general ---
+  if (patch.source !== undefined) self.config.set('source', String(patch.source));
+  if (patch.trigger_mode !== undefined) {
+    self.config.set('trigger_mode', String(patch.trigger_mode));
+    triggerDirty = true;
+  }
+  const intIn = (v, lo, hi, d) => {
+    let n = parseInt(v, 10);
+    if (!Number.isFinite(n)) n = d;
+    return Math.max(lo, Math.min(hi, n));
+  };
+  if (patch.keep_ahead_count !== undefined) {
+    self.config.set('keep_ahead_count', intIn(patch.keep_ahead_count, 1, 50, 3));
+    triggerDirty = true;
+  }
+  if (patch.cooldown_sec !== undefined) {
+    self.config.set('cooldown_sec', intIn(patch.cooldown_sec, 0, 3600, 5));
+    triggerDirty = true;
+  }
+  if (patch.history_window !== undefined) {
+    const hw = intIn(patch.history_window, 1, 200, 20);
+    self.config.set('history_window', hw);
+    if (self.history) self.history.setWindowSize(hw);
+  }
+  if (patch.avoid_same_album_window !== undefined) {
+    self.config.set('avoid_same_album_window', intIn(patch.avoid_same_album_window, 0, 200, 10));
+  }
+  if (patch.avoid_same_artist_window !== undefined) {
+    self.config.set('avoid_same_artist_window', intIn(patch.avoid_same_artist_window, 0, 200, 0));
   }
 
   if (triggerDirty) self.applyTriggerConfig();
