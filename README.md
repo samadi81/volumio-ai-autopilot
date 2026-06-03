@@ -49,8 +49,12 @@ The plugin serves a standalone remote at **`http://<volumio-ip>:8488/`** (port s
 - **Now playing** with album art and a live progress bar
 - **Transport**: previous / play-pause / next, plus a **volume** slider
 - **Current queue** with thumbnails
-- **Quick settings** you can change on the fly without opening the plugin menu: autopilot on/off, energy range, mood (prompt preset), and LLM provider/model
+- **Tap any queue item to play it**
+- **Quick settings** you can change on the fly without opening the plugin menu: autopilot on/off, energy range, and LLM provider/model
+- **Prompt settings**: mood preset + sub-variant, hint preset, and free-text system-prompt / hints editors
+- **General settings**: source, trigger mode, keep-ahead count, cooldown, history window, same-album / same-artist avoidance
 - **👍 Like / 👎 Dislike** the current track, **🤖 AI 추천** to queue an AI pick now, and a **list of liked songs**
+- An **update button** that runs the in-plugin self-update from the browser
 
 On iOS Safari, **Share → Add to Home Screen** turns it into a one-tap app. (The in-app "Open remote" button can't always hand off to an external browser, so opening the URL directly in Safari is the reliable path.)
 
