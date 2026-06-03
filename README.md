@@ -6,8 +6,8 @@ An AI-driven auto-queue plugin for Volumio 3 and 4. Learns your taste from liste
 
 - **Multi-provider LLM**: Anthropic (Claude), OpenAI, Google (Gemini), Groq, DeepSeek, xAI (Grok), Mistral, OpenRouter, Perplexity, Together AI, Ollama (local), or any OpenAI-compatible endpoint
 - **Per-provider API key slots** — switch providers without losing keys
-- **10 prompt presets** with **51 sub-variants** (Jazz Curator → ECM / Bebop / Fusion / Free / Vocal, etc.)
-- **10 taste hint presets** + freeform editing
+- **27 prompt presets** with **250+ sub-variants** — genre curators (jazz, rock, electronic, hip-hop, classical, metal, folk, soul/funk, world, ambient, pop, country, blues, R&B), plus mood, discovery, era, deep-cuts, cinematic, activity, sonic-signature and lyrical-theme modes
+- **35 taste hint presets** + freeform editing
 - **Energy range** (0 quiet ↔ 10 loud) as a constraint
 - **Feedback loop**: skip detection (implicit 👎) + explicit 👍/👎 buttons; feedback is injected into every recommendation prompt
 - **Three trigger modes**: queue empty / keep N ahead / manual only
