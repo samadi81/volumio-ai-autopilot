@@ -204,6 +204,23 @@
           "prompt_sub_era_faithful",
           "prompt_sub_genre_faithful",
           "prompt_sub_mood_shifter",
+          "prompt_sub_rock_curator",
+          "prompt_sub_electronic_curator",
+          "prompt_sub_hiphop_curator",
+          "prompt_sub_classical_curator",
+          "prompt_sub_metal_curator",
+          "prompt_sub_folk_acoustic",
+          "prompt_sub_soul_funk",
+          "prompt_sub_world_music",
+          "prompt_sub_ambient_focus",
+          "prompt_sub_pop_curator",
+          "prompt_sub_country_americana",
+          "prompt_sub_blues_curator",
+          "prompt_sub_rnb_curator",
+          "prompt_sub_cinematic",
+          "prompt_sub_activity_dj",
+          "prompt_sub_sonic_signature",
+          "prompt_sub_lyrical_theme",
           "hint_preset_selected",
           "energy_min",
           "energy_max",
@@ -797,6 +814,159 @@
           "value": { "value": "", "label": "(parent default)" },
           "options": [ { "value": "", "label": "(parent default)" } ],
           "visibleIf": { "field": "prompt_preset_selected", "value": "mood_shifter" }
+        },
+        {
+          "id": "prompt_sub_rock_curator",
+          "element": "select",
+          "label": "TRANSLATE.PROMPT_SUB",
+          "doc": "TRANSLATE.PROMPT_SUB_DOC",
+          "value": { "value": "", "label": "(parent default)" },
+          "options": [ { "value": "", "label": "(parent default)" } ],
+          "visibleIf": { "field": "prompt_preset_selected", "value": "rock_curator" }
+        },
+        {
+          "id": "prompt_sub_electronic_curator",
+          "element": "select",
+          "label": "TRANSLATE.PROMPT_SUB",
+          "doc": "TRANSLATE.PROMPT_SUB_DOC",
+          "value": { "value": "", "label": "(parent default)" },
+          "options": [ { "value": "", "label": "(parent default)" } ],
+          "visibleIf": { "field": "prompt_preset_selected", "value": "electronic_curator" }
+        },
+        {
+          "id": "prompt_sub_hiphop_curator",
+          "element": "select",
+          "label": "TRANSLATE.PROMPT_SUB",
+          "doc": "TRANSLATE.PROMPT_SUB_DOC",
+          "value": { "value": "", "label": "(parent default)" },
+          "options": [ { "value": "", "label": "(parent default)" } ],
+          "visibleIf": { "field": "prompt_preset_selected", "value": "hiphop_curator" }
+        },
+        {
+          "id": "prompt_sub_classical_curator",
+          "element": "select",
+          "label": "TRANSLATE.PROMPT_SUB",
+          "doc": "TRANSLATE.PROMPT_SUB_DOC",
+          "value": { "value": "", "label": "(parent default)" },
+          "options": [ { "value": "", "label": "(parent default)" } ],
+          "visibleIf": { "field": "prompt_preset_selected", "value": "classical_curator" }
+        },
+        {
+          "id": "prompt_sub_metal_curator",
+          "element": "select",
+          "label": "TRANSLATE.PROMPT_SUB",
+          "doc": "TRANSLATE.PROMPT_SUB_DOC",
+          "value": { "value": "", "label": "(parent default)" },
+          "options": [ { "value": "", "label": "(parent default)" } ],
+          "visibleIf": { "field": "prompt_preset_selected", "value": "metal_curator" }
+        },
+        {
+          "id": "prompt_sub_folk_acoustic",
+          "element": "select",
+          "label": "TRANSLATE.PROMPT_SUB",
+          "doc": "TRANSLATE.PROMPT_SUB_DOC",
+          "value": { "value": "", "label": "(parent default)" },
+          "options": [ { "value": "", "label": "(parent default)" } ],
+          "visibleIf": { "field": "prompt_preset_selected", "value": "folk_acoustic" }
+        },
+        {
+          "id": "prompt_sub_soul_funk",
+          "element": "select",
+          "label": "TRANSLATE.PROMPT_SUB",
+          "doc": "TRANSLATE.PROMPT_SUB_DOC",
+          "value": { "value": "", "label": "(parent default)" },
+          "options": [ { "value": "", "label": "(parent default)" } ],
+          "visibleIf": { "field": "prompt_preset_selected", "value": "soul_funk" }
+        },
+        {
+          "id": "prompt_sub_world_music",
+          "element": "select",
+          "label": "TRANSLATE.PROMPT_SUB",
+          "doc": "TRANSLATE.PROMPT_SUB_DOC",
+          "value": { "value": "", "label": "(parent default)" },
+          "options": [ { "value": "", "label": "(parent default)" } ],
+          "visibleIf": { "field": "prompt_preset_selected", "value": "world_music" }
+        },
+        {
+          "id": "prompt_sub_ambient_focus",
+          "element": "select",
+          "label": "TRANSLATE.PROMPT_SUB",
+          "doc": "TRANSLATE.PROMPT_SUB_DOC",
+          "value": { "value": "", "label": "(parent default)" },
+          "options": [ { "value": "", "label": "(parent default)" } ],
+          "visibleIf": { "field": "prompt_preset_selected", "value": "ambient_focus" }
+        },
+        {
+          "id": "prompt_sub_pop_curator",
+          "element": "select",
+          "label": "TRANSLATE.PROMPT_SUB",
+          "doc": "TRANSLATE.PROMPT_SUB_DOC",
+          "value": { "value": "", "label": "(parent default)" },
+          "options": [ { "value": "", "label": "(parent default)" } ],
+          "visibleIf": { "field": "prompt_preset_selected", "value": "pop_curator" }
+        },
+        {
+          "id": "prompt_sub_country_americana",
+          "element": "select",
+          "label": "TRANSLATE.PROMPT_SUB",
+          "doc": "TRANSLATE.PROMPT_SUB_DOC",
+          "value": { "value": "", "label": "(parent default)" },
+          "options": [ { "value": "", "label": "(parent default)" } ],
+          "visibleIf": { "field": "prompt_preset_selected", "value": "country_americana" }
+        },
+        {
+          "id": "prompt_sub_blues_curator",
+          "element": "select",
+          "label": "TRANSLATE.PROMPT_SUB",
+          "doc": "TRANSLATE.PROMPT_SUB_DOC",
+          "value": { "value": "", "label": "(parent default)" },
+          "options": [ { "value": "", "label": "(parent default)" } ],
+          "visibleIf": { "field": "prompt_preset_selected", "value": "blues_curator" }
+        },
+        {
+          "id": "prompt_sub_rnb_curator",
+          "element": "select",
+          "label": "TRANSLATE.PROMPT_SUB",
+          "doc": "TRANSLATE.PROMPT_SUB_DOC",
+          "value": { "value": "", "label": "(parent default)" },
+          "options": [ { "value": "", "label": "(parent default)" } ],
+          "visibleIf": { "field": "prompt_preset_selected", "value": "rnb_curator" }
+        },
+        {
+          "id": "prompt_sub_cinematic",
+          "element": "select",
+          "label": "TRANSLATE.PROMPT_SUB",
+          "doc": "TRANSLATE.PROMPT_SUB_DOC",
+          "value": { "value": "", "label": "(parent default)" },
+          "options": [ { "value": "", "label": "(parent default)" } ],
+          "visibleIf": { "field": "prompt_preset_selected", "value": "cinematic" }
+        },
+        {
+          "id": "prompt_sub_activity_dj",
+          "element": "select",
+          "label": "TRANSLATE.PROMPT_SUB",
+          "doc": "TRANSLATE.PROMPT_SUB_DOC",
+          "value": { "value": "", "label": "(parent default)" },
+          "options": [ { "value": "", "label": "(parent default)" } ],
+          "visibleIf": { "field": "prompt_preset_selected", "value": "activity_dj" }
+        },
+        {
+          "id": "prompt_sub_sonic_signature",
+          "element": "select",
+          "label": "TRANSLATE.PROMPT_SUB",
+          "doc": "TRANSLATE.PROMPT_SUB_DOC",
+          "value": { "value": "", "label": "(parent default)" },
+          "options": [ { "value": "", "label": "(parent default)" } ],
+          "visibleIf": { "field": "prompt_preset_selected", "value": "sonic_signature" }
+        },
+        {
+          "id": "prompt_sub_lyrical_theme",
+          "element": "select",
+          "label": "TRANSLATE.PROMPT_SUB",
+          "doc": "TRANSLATE.PROMPT_SUB_DOC",
+          "value": { "value": "", "label": "(parent default)" },
+          "options": [ { "value": "", "label": "(parent default)" } ],
+          "visibleIf": { "field": "prompt_preset_selected", "value": "lyrical_theme" }
         },
         {
           "id": "apply_prompt_preset",
