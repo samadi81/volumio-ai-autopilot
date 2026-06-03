@@ -21,7 +21,7 @@
   },
   "http_api_port": {
     "type": "number",
-    "value": 3001
+    "value": 8488
   },
   "recommender": {
     "type": "string",

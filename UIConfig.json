@@ -132,9 +132,9 @@
           "type": "number",
           "label": "TRANSLATE.HTTP_API_PORT",
           "doc": "TRANSLATE.HTTP_API_PORT_DOC",
-          "value": 3001,
+          "value": 8488,
           "attributes": [
-            { "placeholder": "3001" },
+            { "placeholder": "8488" },
             { "min": 0 },
             { "max": 65535 }
           ]
@@ -997,7 +997,7 @@
           "doc": "TRANSLATE.OPEN_REMOTE_DOC",
           "onClick": {
             "type": "openUrl",
-            "url": "http://volumio.local:3001/"
+            "url": "http://volumio.local:8488/"
           }
         },
         {

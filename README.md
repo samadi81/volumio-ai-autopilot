@@ -44,7 +44,15 @@ After install, enable the plugin via **Plugins → Installed Plugins → AI Auto
 
 ### Remote panel (phone/browser)
 
-The plugin serves a standalone remote at **`http://<volumio-ip>:3001/`** (port set by `http_api_port`). Open it in any browser — outside the Volumio app — to see the **now-playing track with album art**, the **current queue**, and **quick settings** you can change on the fly without opening the plugin menu: autopilot on/off, energy range, mood (prompt preset), and LLM provider/model. 👍/👎/⏭ are there too. On iOS Safari, **Share → Add to Home Screen** turns it into a one-tap app.
+The plugin serves a standalone remote at **`http://<volumio-ip>:8488/`** (port set by `http_api_port`; if that port is busy the server automatically moves to the next free one and the Actions button shows the real URL). Open it in any browser — outside the Volumio app — to get:
+
+- **Now playing** with album art and a live progress bar
+- **Transport**: previous / play-pause / next, plus a **volume** slider
+- **Current queue** with thumbnails
+- **Quick settings** you can change on the fly without opening the plugin menu: autopilot on/off, energy range, mood (prompt preset), and LLM provider/model
+- **👍 Like / 👎 Dislike** the current track, **🤖 AI 추천** to queue an AI pick now, and a **list of liked songs**
+
+On iOS Safari, **Share → Add to Home Screen** turns it into a one-tap app. (The in-app "Open remote" button can't always hand off to an external browser, so opening the URL directly in Safari is the reliable path.)
 
 ### Updating
 
