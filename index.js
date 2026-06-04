@@ -3,12 +3,32 @@
 const libQ = require('kew');
 const fs = require('fs-extra');
 const path = require('path');
+const crypto = require('crypto');
+const { execFileSync } = require('child_process');
+const fetch = require('node-fetch');
 
 const History = require('./lib/history');
 const QueueMonitor = require('./lib/queue-monitor');
 const Presets = require('./lib/presets');
 const Feedback = require('./lib/feedback');
 const HttpApi = require('./lib/http-api');
+const { QobuzMetadataCache } = require('./lib/qobuz-metadata-cache');
+const {
+  QobuzClient,
+  FORMAT,
+  fetchAppConfig,
+  qobuzOAuthAuthorizeUrl,
+  exchangeQobuzOAuthCode,
+  extractQobuzLocalUserAuth
+} = require('./lib/qobuz');
+const { TrackCache } = require('./lib/track-cache');
+const {
+  qobuzTrackIdFromUri,
+  localQobuzTrackIdFromUri,
+  localQobuzPlaybackFromState,
+  findLocalQobuzQueueIndex,
+  downloadStatusForTrack
+} = require('./lib/download-state');
 const Recommenders = {
   llm:     require('./recommenders/llm'),
   lastfm:  require('./recommenders/lastfm'),
@@ -56,6 +76,19 @@ AiAutopilot.prototype.onStart = function () {
       logger: self.logger
     });
     self.feedback.load();
+
+    self.qobuzMeta = new QobuzMetadataCache({
+      filePath: path.join(self.dataDir, 'qobuz-meta.json'),
+      logger: self.logger
+    });
+    self.qobuzMeta.load();
+
+    self.downloadJobs = {};
+    self._downloadInFlight = {};
+    self._qobuzClient = null;
+    self._qobuzBrowserAuth = null;
+    self._prefetchLastAt = 0;
+    self.setupTrackCache();
 
     self.monitor = new QueueMonitor({
       commandRouter: self.commandRouter,
@@ -123,6 +156,456 @@ AiAutopilot.prototype.onStop = function () {
     self.logger.error('[ai_autopilot] onStop error: ' + e.message);
   }
   return libQ.resolve();
+};
+
+// ---------- Qobuz local download/cache ----------
+
+AiAutopilot.prototype._downloadQuality = function () {
+  const q = Number(this.config.get('download_quality', FORMAT.FLAC_24_96));
+  return [FORMAT.MP3_320, FORMAT.FLAC_16_44, FORMAT.FLAC_24_96, FORMAT.FLAC_24_192].indexOf(q) >= 0
+    ? q
+    : FORMAT.FLAC_24_96;
+};
+
+AiAutopilot.prototype._downloadDir = function () {
+  return this.config.get('download_dir', '/mnt/INTERNAL/qobuz-tap') || '/mnt/INTERNAL/qobuz-tap';
+};
+
+AiAutopilot.prototype.setupTrackCache = function () {
+  const self = this;
+  self.trackCache = new TrackCache({
+    dir: self._downloadDir(),
+    resolveStreamUrl: (trackId) => self.resolveQobuzStreamUrl(trackId),
+    logger: self.logger
+  });
+};
+
+AiAutopilot.prototype._firstQueuedQobuzTrackId = function () {
+  const self = this;
+  let queue = [];
+  try {
+    queue = self.commandRouter.volumioGetQueue() || [];
+  } catch (e) {
+    try { queue = self.commandRouter.stateMachine.getQueue() || []; } catch (e2) { queue = []; }
+  }
+  for (const q of queue) {
+    const id = qobuzTrackIdFromUri(q && q.uri);
+    if (id) return id;
+  }
+  return process.env.QOBUZ_TEST_TRACK_ID || '19512574';
+};
+
+AiAutopilot.prototype._qobuzCredentials = function () {
+  const self = this;
+  return {
+    email: self.config.get('qobuz_email', '') || process.env.QOBUZ_EMAIL || '',
+    password: self.config.get('qobuz_password', '') || process.env.QOBUZ_PASSWORD || '',
+    userId: self.config.get('qobuz_user_id', '') || process.env.QOBUZ_USER_ID || '',
+    authToken: self.config.get('qobuz_auth_token', '') || process.env.QOBUZ_AUTH_TOKEN || '',
+    appId: process.env.QOBUZ_APP_ID || '',
+    secret: process.env.QOBUZ_APP_SECRET || '',
+    authKey: process.env.QOBUZ_AUTH_KEY || ''
+  };
+};
+
+AiAutopilot.prototype._getQobuzClient = async function (force) {
+  const self = this;
+  if (self._qobuzClient && !force) return self._qobuzClient;
+
+  const creds = self._qobuzCredentials();
+  if (!creds.authToken && (!creds.email || !creds.password)) {
+    throw new Error('Qobuz credentials are missing. Set Qobuz email/password or Qobuz user_auth_token in plugin settings.');
+  }
+
+  const client = new QobuzClient();
+  await client.init({
+    email: creds.email,
+    password: creds.password,
+    userId: creds.userId || undefined,
+    authToken: creds.authToken || undefined,
+    appId: creds.appId || undefined,
+    secret: creds.secret || undefined,
+    authKey: creds.authKey || undefined,
+    testTrackId: self._firstQueuedQobuzTrackId()
+  });
+  self._qobuzClient = client;
+  return client;
+};
+
+AiAutopilot.prototype.startQobuzBrowserAuth = async function (redirectUri) {
+  const self = this;
+  const cfg = await fetchAppConfig();
+  if (!cfg || !cfg.appId || !cfg.authKey) {
+    throw new Error('Qobuz browser auth: app_id/private_key not found in web bundle');
+  }
+  const state = crypto.randomBytes(16).toString('hex');
+  self._qobuzBrowserAuth = {
+    appId: cfg.appId,
+    authKey: cfg.authKey,
+    state,
+    expiresAt: Date.now() + 10 * 60 * 1000
+  };
+  return qobuzOAuthAuthorizeUrl(cfg.appId, redirectUri, state);
+};
+
+AiAutopilot.prototype.completeQobuzBrowserAuth = async function (code, state) {
+  const self = this;
+  const pending = self._qobuzBrowserAuth;
+  if (!pending || !pending.appId || !pending.authKey) {
+    throw new Error('Qobuz browser auth: no pending login. Start again.');
+  }
+  if (Date.now() > pending.expiresAt) {
+    self._qobuzBrowserAuth = null;
+    throw new Error('Qobuz browser auth: login expired. Start again.');
+  }
+  if (state && pending.state && state !== pending.state) {
+    self._qobuzBrowserAuth = null;
+    throw new Error('Qobuz browser auth: state mismatch. Start again.');
+  }
+
+  const exchanged = await exchangeQobuzOAuthCode({
+    appId: pending.appId,
+    authKey: pending.authKey,
+    code: code
+  });
+  self.config.set('qobuz_auth_token', exchanged.authToken);
+  if (exchanged.userId) self.config.set('qobuz_user_id', exchanged.userId);
+  self._qobuzBrowserAuth = null;
+  self._qobuzClient = null;
+  return {
+    ok: true,
+    tokenSaved: true,
+    userIdSaved: !!exchanged.userId
+  };
+};
+
+AiAutopilot.prototype._volumioCommand = async function (cmd) {
+  const url = 'http://localhost:3000/api/v1/commands/?cmd=' + encodeURIComponent(cmd).replace(/%26/g, '&').replace(/%3D/g, '=');
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('Volumio command ' + cmd + ' failed: ' + res.status);
+};
+
+AiAutopilot.prototype._mpcCurrentFile = function () {
+  try {
+    return execFileSync('mpc', ['-f', '%file%', 'current'], { encoding: 'utf8', timeout: 5000 }).trim();
+  } catch (e) {
+    return '';
+  }
+};
+
+AiAutopilot.prototype._restorePlaybackAfterResolve = async function (state) {
+  const self = this;
+  const status = state && state.status;
+  if (status === 'play') return;
+  const target = status === 'pause' ? 'pause' : 'stop';
+  try {
+    for (let i = 0; i < 3; i++) {
+      if (i > 0) await new Promise((resolve) => setTimeout(resolve, 800));
+      await self._volumioCommand(target);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      let current = null;
+      try { current = self.commandRouter.volumioGetState(); } catch (e) {}
+      if (!current || current.status === target) return;
+    }
+  } catch (e) {
+    const logWarn = self.logger.warn || self.logger.info || function () {};
+    logWarn.call(self.logger, '[ai_autopilot] Qobuz playback fallback restore warning: ' + (e && e.message ? e.message : e));
+  }
+};
+
+AiAutopilot.prototype._resolveQobuzStreamUrlFromPlayback = async function (trackId) {
+  const self = this;
+  let state = null;
+  try { state = self.commandRouter.volumioGetState(); } catch (e) {}
+  const currentId = qobuzTrackIdFromUri(state && state.uri);
+  if (String(currentId || '') !== String(trackId || '')) {
+    throw new Error('Qobuz API login failed, and playback fallback can only resolve the current Qobuz track. Play this track first or set Qobuz user_auth_token.');
+  }
+
+  const beforeStatus = state && state.status;
+  if (beforeStatus !== 'play') await self._volumioCommand('play');
+
+  const deadline = Date.now() + 15000;
+  let url = '';
+  while (Date.now() < deadline) {
+    url = self._mpcCurrentFile();
+    if (/^https?:\/\//i.test(url)) break;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+
+  await self._restorePlaybackAfterResolve(state);
+  if (!/^https?:\/\//i.test(url)) throw new Error('Qobuz playback fallback did not expose a stream URL');
+  self.logger.info('[ai_autopilot] Qobuz stream URL resolved via current playback fallback for track ' + trackId);
+  return url;
+};
+
+AiAutopilot.prototype.resolveQobuzStreamUrl = async function (trackId) {
+  const self = this;
+  const fmt = self._downloadQuality();
+  const resolveOnce = async (force) => {
+    const client = await self._getQobuzClient(force);
+    const info = await client.getFileUrl(trackId, fmt);
+    if (!info || !info.url) throw new Error('Qobuz did not return a stream URL for track ' + trackId);
+    return info.url;
+  };
+
+  try {
+    return await resolveOnce(false);
+  } catch (e) {
+    if (/401|auth|User authentication/i.test(e && e.message ? e.message : String(e))) {
+      self._qobuzClient = null;
+      try {
+        return await resolveOnce(true);
+      } catch (e2) {
+        if (/401|auth|User authentication/i.test(e2 && e2.message ? e2.message : String(e2))) {
+          return self._resolveQobuzStreamUrlFromPlayback(trackId);
+        }
+        throw e2;
+      }
+    }
+    throw e;
+  }
+};
+
+AiAutopilot.prototype._downloadStatus = function (trackId, localPlayback) {
+  const self = this;
+  if (!trackId || !self.trackCache) return null;
+  localPlayback = localPlayback || {};
+  const cachedFile = self.trackCache.existing(trackId);
+  return downloadStatusForTrack(trackId, {
+    jobs: self.downloadJobs || {},
+    cachedFile,
+    libraryUri: cachedFile ? self.trackCache.libraryUri(cachedFile) : '',
+    localPlaybackTrackId: localPlayback.trackId || '',
+    localPlaybackLibraryUri: localPlayback.libraryUri || ''
+  });
+};
+
+AiAutopilot.prototype._rememberQobuzMeta = function (trackId, meta) {
+  const self = this;
+  if (!trackId || !self.qobuzMeta) return null;
+  return self.qobuzMeta.remember(trackId, meta || {}) || self.qobuzMeta.get(trackId);
+};
+
+AiAutopilot.prototype._qobuzMetaFromQueue = function (trackId) {
+  const self = this;
+  const wanted = String(trackId || '');
+  if (!wanted) return null;
+  let state = null;
+  try { state = self.commandRouter.volumioGetState(); } catch (e) {}
+  if (String(qobuzTrackIdFromUri(state && state.uri) || '') === wanted) {
+    const remembered = self._rememberQobuzMeta(wanted, {
+      title: state.title || '',
+      artist: state.artist || '',
+      album: state.album || '',
+      albumart: state.albumart || '',
+      uri: state.uri || ''
+    });
+    if (remembered) return remembered;
+  }
+
+  const queue = self._queueSnapshot();
+  for (const q of queue) {
+    const id = qobuzTrackIdFromUri(q && q.uri);
+    if (String(id || '') !== wanted) continue;
+    const remembered = self._rememberQobuzMeta(wanted, {
+      title: q.name || q.title || '',
+      artist: q.artist || '',
+      album: q.album || '',
+      albumart: q.albumart || '',
+      uri: q.uri || ''
+    });
+    if (remembered) return remembered;
+  }
+  if (self.history && typeof self.history.all === 'function') {
+    const items = self.history.all().slice().reverse();
+    for (const h of items) {
+      const id = qobuzTrackIdFromUri(h && h.uri);
+      if (String(id || '') !== wanted) continue;
+      const remembered = self._rememberQobuzMeta(wanted, {
+        title: h.title || '',
+        artist: h.artist || '',
+        album: h.album || '',
+        albumart: h.albumart || '',
+        uri: h.uri || ''
+      });
+      if (remembered) return remembered;
+    }
+  }
+  return self.qobuzMeta ? self.qobuzMeta.get(wanted) : null;
+};
+
+AiAutopilot.prototype.downloadTrack = async function (trackId, meta) {
+  const self = this;
+  trackId = String(trackId || '').trim();
+  if (!/^\d+$/.test(trackId)) throw new Error('Invalid Qobuz track id');
+  if (!self.trackCache) self.setupTrackCache();
+  meta = Object.assign({}, self._qobuzMetaFromQueue(trackId) || {}, meta || {});
+
+  const cached = self.trackCache.existing(trackId);
+  if (cached) {
+    const res = { trackId, file: cached, libraryUri: self.trackCache.libraryUri(cached), cached: true };
+    self.downloadJobs[trackId] = { state: 'done', progress: 1, libraryUri: res.libraryUri };
+    return res;
+  }
+
+  if (!self.config.get('download_enabled', false)) throw new Error('Qobuz downloads are disabled in settings.');
+
+  if (self._downloadInFlight[trackId]) return self._downloadInFlight[trackId];
+
+  self.downloadJobs[trackId] = { state: 'downloading', progress: 0, libraryUri: '' };
+  const p = self.trackCache.download(trackId, Object.assign({ ext: 'flac' }, meta || {}), (progress) => {
+    const job = self.downloadJobs[trackId] || {};
+    job.state = 'downloading';
+    job.progress = Math.max(0, Math.min(1, Number(progress) || 0));
+    self.downloadJobs[trackId] = job;
+  }).then((res) => {
+    self.downloadJobs[trackId] = { state: 'done', progress: 1, libraryUri: res.libraryUri };
+    self.logger.info('[ai_autopilot] Qobuz track cached: ' + trackId + ' -> ' + res.libraryUri);
+    return res;
+  }).catch((e) => {
+    self.downloadJobs[trackId] = { state: 'error', progress: 0, error: e && e.message ? e.message : String(e), libraryUri: '' };
+    self.logger.error('[ai_autopilot] Qobuz download failed for ' + trackId + ': ' + (e && e.message ? e.message : e));
+    throw e;
+  }).then((res) => {
+    delete self._downloadInFlight[trackId];
+    return res;
+  }, (err) => {
+    delete self._downloadInFlight[trackId];
+    throw err;
+  });
+  self._downloadInFlight[trackId] = p;
+  return p;
+};
+
+AiAutopilot.prototype.downloadAndPlay = async function (trackId) {
+  const self = this;
+  const res = await self.downloadTrack(trackId);
+  const play = await self._playLocalPreservingQueue(trackId, res.libraryUri, self._qobuzMetaFromQueue(trackId));
+  res.playing = true;
+  res.queueIndex = play.queueIndex;
+  res.addedToQueue = play.addedToQueue;
+  return res;
+};
+
+AiAutopilot.prototype._queueSnapshot = function () {
+  const self = this;
+  try {
+    const queue = self.commandRouter.volumioGetQueue();
+    if (Array.isArray(queue)) return queue;
+    if (queue && Array.isArray(queue.queue)) return queue.queue;
+  } catch (e) {}
+  try {
+    const queue = self.commandRouter.stateMachine.getQueue();
+    if (Array.isArray(queue)) return queue;
+    if (queue && Array.isArray(queue.queue)) return queue.queue;
+  } catch (e2) {}
+  return [];
+};
+
+AiAutopilot.prototype._playQueueIndex = async function (index) {
+  const self = this;
+  const n = Number(index);
+  if (!Number.isFinite(n) || n < 0) throw new Error('Invalid queue index for local playback');
+  if (self.commandRouter && typeof self.commandRouter.volumioPlay === 'function') {
+    await libQ.resolve(self.commandRouter.volumioPlay(n));
+    return;
+  }
+  await self._volumioCommand('play&N=' + n);
+};
+
+AiAutopilot.prototype._playLocalPreservingQueue = async function (trackId, libraryUri, meta) {
+  const self = this;
+  const queue = self._queueSnapshot();
+  let index = findLocalQobuzQueueIndex(queue, trackId);
+  let addedToQueue = false;
+  meta = Object.assign({}, self._qobuzMetaFromQueue(trackId) || {}, meta || {});
+
+  if (index < 0) {
+    const item = {
+      uri: libraryUri,
+      service: 'mpd',
+      name: meta.title || '',
+      title: meta.title || '',
+      artist: meta.artist || '',
+      album: meta.album || '',
+      albumart: meta.albumart || ''
+    };
+    const res = await libQ.resolve(self.commandRouter.addQueueItems([item]));
+    index = res && typeof res.firstItemIndex === 'number' ? res.firstItemIndex : self._queueSnapshot().length - 1;
+    addedToQueue = true;
+  }
+
+  await self._playQueueIndex(index);
+  return { queueIndex: index, addedToQueue };
+};
+
+AiAutopilot.prototype.playCachedTrack = async function (trackId) {
+  const self = this;
+  trackId = String(trackId || '').trim();
+  if (!/^\d+$/.test(trackId)) throw new Error('Invalid Qobuz track id');
+  if (!self.trackCache) self.setupTrackCache();
+  const cached = self.trackCache.existing(trackId);
+  if (!cached) throw new Error('No downloaded local file for Qobuz track ' + trackId);
+  const libraryUri = self.trackCache.libraryUri(cached);
+  const play = await self._playLocalPreservingQueue(trackId, libraryUri, self._qobuzMetaFromQueue(trackId));
+  self.downloadJobs[trackId] = { state: 'done', progress: 1, libraryUri };
+  return { trackId, file: cached, libraryUri, cached: true, playing: true, queueIndex: play.queueIndex, addedToQueue: play.addedToQueue };
+};
+
+AiAutopilot.prototype._isLocalQobuzCachePlayback = function () {
+  const self = this;
+  try {
+    return localQobuzPlaybackFromState(self.commandRouter.volumioGetState()).active;
+  } catch (e) {
+    return false;
+  }
+};
+
+AiAutopilot.prototype.prefetchUpcoming = async function (opts) {
+  const self = this;
+  opts = opts || {};
+  if (!self.config.get('download_enabled', false)) return { ok: true, skipped: 'disabled' };
+  const n = Math.max(0, Math.min(20, Number(self.config.get('prefetch_count', 0)) || 0));
+  if (!n && !opts.limit) return { ok: true, skipped: 'off' };
+  if (self.config.get('quiet_mode_enabled', false) && self._isLocalQobuzCachePlayback()) {
+    return { ok: true, skipped: 'quiet_mode' };
+  }
+  if (!opts.force && Date.now() - self._prefetchLastAt < 15000) {
+    return { ok: true, skipped: 'throttled' };
+  }
+  self._prefetchLastAt = Date.now();
+
+  let state = null;
+  let queue = [];
+  try { state = self.commandRouter.volumioGetState(); } catch (e) {}
+  try {
+    queue = self.commandRouter.volumioGetQueue() || [];
+  } catch (e) {
+    try { queue = self.commandRouter.stateMachine.getQueue() || []; } catch (e2) { queue = []; }
+  }
+  const pos = state && typeof state.position === 'number' ? state.position : -1;
+  const start = opts.includeCurrent ? Math.max(0, pos) : Math.max(0, pos + 1);
+  const limit = Math.max(1, Math.min(50, Number(opts.limit || n) || n || 1));
+  const ids = [];
+  for (let i = start; i < queue.length && ids.length < limit; i++) {
+    const id = qobuzTrackIdFromUri(queue[i] && queue[i].uri);
+    if (!id) continue;
+    if (self._downloadStatus(id) && self._downloadStatus(id).cached) continue;
+    if (self._downloadInFlight && self._downloadInFlight[id]) continue;
+    ids.push(id);
+  }
+
+  const started = [];
+  for (const id of ids) {
+    started.push(id);
+    self.downloadTrack(id).catch(() => {});
+  }
+  return { ok: true, started };
+};
+
+AiAutopilot.prototype.downloadQueueWindow = async function (limit) {
+  return this.prefetchUpcoming({ force: true, includeCurrent: true, limit: limit || 10 });
 };
 
 AiAutopilot.prototype.onRestart = function () {
@@ -237,11 +720,7 @@ AiAutopilot.prototype.getUIConfig = function () {
         openHintsBtn.onClick.url = encodeDataUrl(self.config.get('llm_hints', ''));
       }
 
-      // Remote control button — fill in LAN IP + port dynamically.
-      const actionsSection = uiconf.sections[2];
-      const openRemoteBtn = actionsSection && actionsSection.content &&
-        actionsSection.content.find((c) => c.id === 'open_remote');
-      if (openRemoteBtn && openRemoteBtn.onClick) {
+      const remoteBaseUrl = () => {
         let host = null;
         try {
           const os = require('os');
@@ -256,7 +735,15 @@ AiAutopilot.prototype.getUIConfig = function () {
         // busy port), then fall back to the configured value.
         const port = (self.httpApi && self.httpApi.actualPort) ||
           Number(self.config.get('http_api_port', 8488)) || 8488;
-        const remoteUrl = 'http://' + (host || 'volumio.local') + ':' + port + '/';
+        return 'http://' + (host || 'volumio.local') + ':' + port + '/';
+      };
+
+      // Remote control button — fill in LAN IP + port dynamically.
+      const actionsSection = uiconf.sections[2];
+      const openRemoteBtn = actionsSection && actionsSection.content &&
+        actionsSection.content.find((c) => c.id === 'open_remote');
+      const remoteUrl = remoteBaseUrl();
+      if (openRemoteBtn && openRemoteBtn.onClick) {
         openRemoteBtn.onClick.url = remoteUrl;
         // Show the URL as text too — the in-app button can't always hand off to an
         // external browser (iOS), so the user can copy/open this in Safari directly.
@@ -268,6 +755,27 @@ AiAutopilot.prototype.getUIConfig = function () {
       setField(1, 'spotify_client_id', self.config.get('spotify_client_id', ''));
       setField(1, 'spotify_client_secret', self.config.get('spotify_client_secret', ''));
       setField(1, 'spotify_refresh_token', self.config.get('spotify_refresh_token', ''));
+
+      // section 3 - Qobuz local downloads
+      setField(3, 'download_enabled', self.config.get('download_enabled', false));
+      setField(3, 'download_dir', self.config.get('download_dir', '/mnt/INTERNAL/qobuz-tap'));
+      setField(3, 'download_quality', self._downloadQuality());
+      setField(3, 'qobuz_email', self.config.get('qobuz_email', ''));
+      setField(3, 'qobuz_password', '');
+      setField(3, 'qobuz_user_id', '');
+      setField(3, 'qobuz_auth_token', '');
+      setField(3, 'qobuz_local_user_json', '');
+      setField(3, 'prefetch_count', self.config.get('prefetch_count', 0));
+      setField(3, 'quiet_mode_enabled', self.config.get('quiet_mode_enabled', false));
+      const qobuzSection = uiconf.sections.find((s) => s.id === 'section_qobuz_downloads');
+      const qobuzAuthBtn = qobuzSection && qobuzSection.content &&
+        qobuzSection.content.find((c) => c.id === 'qobuz_browser_auth');
+      if (qobuzAuthBtn && qobuzAuthBtn.onClick) {
+        const authUrl = remoteUrl.replace(/\/$/, '') + '/qobuz-auth/start';
+        qobuzAuthBtn.onClick.url = authUrl;
+        qobuzAuthBtn.doc = (qobuzAuthBtn.doc ? qobuzAuthBtn.doc + '  ' : '') +
+          'Safari: ' + authUrl;
+      }
 
       defer.resolve(uiconf);
     })
@@ -302,6 +810,54 @@ AiAutopilot.prototype.saveGeneralSettings = function (data) {
     }
   }
 
+  self.commandRouter.pushToastMessage('success', 'AI Autopilot', self.t('SETTINGS_SAVED'));
+  return libQ.resolve({});
+};
+
+AiAutopilot.prototype.saveDownloadSettings = function (data) {
+  const self = this;
+  data = data || {};
+  ['download_enabled', 'quiet_mode_enabled'].forEach((k) => {
+    if (data[k] !== undefined) self.config.set(k, !!data[k]);
+  });
+  if (data.download_dir !== undefined) {
+    self.config.set('download_dir', String(data.download_dir || '/mnt/INTERNAL/qobuz-tap'));
+  }
+  if (data.download_quality !== undefined) {
+    const q = Number(valueOf(data.download_quality));
+    if ([FORMAT.MP3_320, FORMAT.FLAC_16_44, FORMAT.FLAC_24_96, FORMAT.FLAC_24_192].indexOf(q) >= 0) {
+      self.config.set('download_quality', q);
+    }
+  }
+  if (data.qobuz_email !== undefined) self.config.set('qobuz_email', String(data.qobuz_email || '').trim());
+  if (data.qobuz_password !== undefined && data.qobuz_password !== '') {
+    self.config.set('qobuz_password', String(data.qobuz_password));
+    self._qobuzClient = null;
+  }
+  if (data.qobuz_local_user_json !== undefined && String(data.qobuz_local_user_json).trim() !== '') {
+    const parsed = extractQobuzLocalUserAuth(String(data.qobuz_local_user_json));
+    if (!parsed.authToken) {
+      self.commandRouter.pushToastMessage('error', 'AI Autopilot', 'Qobuz local user JSON에서 token을 찾지 못했습니다.');
+      return libQ.reject(new Error('Qobuz local user JSON did not contain a token'));
+    }
+    self.config.set('qobuz_auth_token', parsed.authToken);
+    if (parsed.userId) self.config.set('qobuz_user_id', parsed.userId);
+    self._qobuzClient = null;
+  }
+  if (data.qobuz_user_id !== undefined && String(data.qobuz_user_id).trim() !== '') {
+    self.config.set('qobuz_user_id', String(data.qobuz_user_id).trim());
+    self._qobuzClient = null;
+  }
+  if (data.qobuz_auth_token !== undefined && String(data.qobuz_auth_token).trim() !== '') {
+    self.config.set('qobuz_auth_token', String(data.qobuz_auth_token).trim());
+    self._qobuzClient = null;
+  }
+  if (data.prefetch_count !== undefined) {
+    let n = parseInt(data.prefetch_count, 10);
+    if (!Number.isFinite(n)) n = 0;
+    self.config.set('prefetch_count', Math.max(0, Math.min(20, n)));
+  }
+  self.setupTrackCache();
   self.commandRouter.pushToastMessage('success', 'AI Autopilot', self.t('SETTINGS_SAVED'));
   return libQ.resolve({});
 };
@@ -692,20 +1248,31 @@ AiAutopilot.prototype.applyTriggerConfig = function () {
 AiAutopilot.prototype.handleTrackPlayed = function (track) {
   const self = this;
   if (!track || !track.title) return;
-  self.history.push({
-    title: track.title,
-    artist: track.artist,
-    album: track.album,
-    service: track.service,
-    uri: track.uri,
-    at: Date.now()
+  if (localQobuzTrackIdFromUri(track.uri)) {
+    self.log('Local Qobuz cache playback; history unchanged for ' + track.uri);
+  } else {
+    self.history.push({
+      title: track.title,
+      artist: track.artist,
+      album: track.album,
+      service: track.service,
+      uri: track.uri,
+      at: Date.now()
+    });
+    self.log('Recorded history: ' + track.artist + ' — ' + track.title);
+  }
+  self.prefetchUpcoming().catch((e) => {
+    self.logger.error('[ai_autopilot] Qobuz prefetch failed: ' + (e && e.message ? e.message : e));
   });
-  self.log('Recorded history: ' + track.artist + ' — ' + track.title);
 };
 
 AiAutopilot.prototype.handleTrackSkipped = function (track) {
   const self = this;
   if (!track || !track.title) return;
+  if (localQobuzTrackIdFromUri(track.uri)) {
+    self.log('Local Qobuz cache skip ignored for feedback: ' + track.uri);
+    return;
+  }
   const useSkip = !!self.config.get('feedback_use_skip', false);
   if (!useSkip) {
     self.logger.info('[ai_autopilot] skip detected but feedback_use_skip=OFF; ignoring: "' +
@@ -725,6 +1292,10 @@ AiAutopilot.prototype.handleTrackSkipped = function (track) {
 AiAutopilot.prototype.handleAutoTrigger = function () {
   const self = this;
   if (!self.config.get('enabled', true)) return;
+  if (self.config.get('quiet_mode_enabled', false) && self._isLocalQobuzCachePlayback()) {
+    self.log('quiet mode: auto trigger paused during local cache playback');
+    return;
+  }
   return self.pickAndQueue().fail((err) => {
     self.logger.error('[ai_autopilot] auto trigger failed: ' + err.message);
   });
@@ -1103,25 +1674,53 @@ AiAutopilot.prototype.getQuickState = function () {
     try { queue = self.commandRouter.stateMachine.getQueue() || []; } catch (e2) { queue = []; }
   }
 
+  const stateLocalPlayback = localQobuzPlaybackFromState(state);
+  const stateMeta = stateLocalPlayback.active ? (self._qobuzMetaFromQueue(stateLocalPlayback.trackId) || {}) : {};
   const track = state && (state.uri || state.title) ? {
-    title: state.title || '',
-    artist: state.artist || '',
-    album: state.album || '',
-    albumart: state.albumart || '',
+    title: stateMeta.title || state.title || '',
+    artist: stateMeta.artist || state.artist || '',
+    album: stateMeta.album || state.album || '',
+    albumart: stateMeta.albumart || state.albumart || '',
     uri: state.uri || '',
+    qobuzTrackId: (stateLocalPlayback.trackId || qobuzTrackIdFromUri(state.uri) || ''),
+    localPlayback: stateLocalPlayback.active,
+    playbackSource: stateLocalPlayback.active ? 'local' : (qobuzTrackIdFromUri(state.uri) ? 'qobuz' : (state.service || '')),
+    libraryUri: stateLocalPlayback.libraryUri,
     duration: Number(state.duration) || 0,
     seek: Number(state.seek) || 0,
     status: state.status || ''
   } : null;
 
   const pos = state && typeof state.position === 'number' ? state.position : -1;
-  const queueOut = (queue || []).map((q, i) => ({
-    title: q.name || q.title || '',
-    artist: q.artist || '',
-    albumart: q.albumart || '',
-    uri: q.uri || '',
-    current: i === pos
-  }));
+  const localPlayback = localQobuzPlaybackFromState(state);
+  const queueOut = (queue || []).map((q, i) => {
+    const localTrackId = localQobuzTrackIdFromUri(q && q.uri);
+    const qobuzTrackId = qobuzTrackIdFromUri(q && q.uri);
+    if (qobuzTrackId) {
+      self._rememberQobuzMeta(qobuzTrackId, {
+        title: q.name || q.title || '',
+        artist: q.artist || '',
+        album: q.album || '',
+        albumart: q.albumart || '',
+        uri: q.uri || ''
+      });
+    }
+    const trackId = qobuzTrackId || localTrackId;
+    const playingLocal = !!(localPlayback.active && trackId && String(trackId) === String(localPlayback.trackId));
+    const savedMeta = localTrackId ? (self._qobuzMetaFromQueue(localTrackId) || {}) : {};
+    return {
+      title: savedMeta.title || q.name || q.title || '',
+      artist: savedMeta.artist || q.artist || '',
+      album: savedMeta.album || q.album || '',
+      albumart: savedMeta.albumart || q.albumart || '',
+      uri: q.uri || '',
+      current: i === pos || !!(playingLocal && localTrackId),
+      source: localTrackId ? 'local' : (qobuzTrackId ? 'qobuz' : (q.service || '')),
+      playingLocal,
+      qobuzTrackId: trackId || '',
+      download: trackId ? self._downloadStatus(trackId, localPlayback) : null
+    };
+  });
 
   let counts = { likes: 0, dislikes: 0 };
   let likesList = [];
@@ -1189,7 +1788,14 @@ AiAutopilot.prototype.getQuickState = function () {
       cooldown_sec: Number(self.config.get('cooldown_sec', 5)),
       history_window: Number(self.config.get('history_window', 20)),
       avoid_same_album_window: Number(self.config.get('avoid_same_album_window', 10)),
-      avoid_same_artist_window: Number(self.config.get('avoid_same_artist_window', 0))
+      avoid_same_artist_window: Number(self.config.get('avoid_same_artist_window', 0)),
+      // downloads
+      download_enabled: !!self.config.get('download_enabled', false),
+      download_quality: self._downloadQuality(),
+      prefetch_count: Number(self.config.get('prefetch_count', 0)),
+      quiet_mode_enabled: !!self.config.get('quiet_mode_enabled', false),
+      qobuz_auth_token_saved: !!String(self.config.get('qobuz_auth_token', '') || '').trim(),
+      qobuz_user_id_saved: !!String(self.config.get('qobuz_user_id', '') || '').trim()
     },
     options: {
       providers,
@@ -1198,7 +1804,8 @@ AiAutopilot.prototype.getQuickState = function () {
       promptSubs,
       hints: Presets.HINTS.map((h) => ({ value: h.id, label: h.name })),
       sources: self._uiOptions('source'),
-      triggerModes: self._uiOptions('trigger_mode')
+      triggerModes: self._uiOptions('trigger_mode'),
+      downloadQualities: self._uiOptions('download_quality')
     }
   };
 };
@@ -1292,6 +1899,19 @@ AiAutopilot.prototype.applyQuickChange = function (patch) {
     self.config.set('avoid_same_artist_window', intIn(patch.avoid_same_artist_window, 0, 200, 0));
   }
 
+  if (patch.download_enabled !== undefined) self.config.set('download_enabled', !!patch.download_enabled);
+  if (patch.quiet_mode_enabled !== undefined) self.config.set('quiet_mode_enabled', !!patch.quiet_mode_enabled);
+  if (patch.prefetch_count !== undefined) {
+    self.config.set('prefetch_count', intIn(patch.prefetch_count, 0, 20, 0));
+  }
+  if (patch.download_quality !== undefined) {
+    const q = Number(patch.download_quality);
+    if ([FORMAT.MP3_320, FORMAT.FLAC_16_44, FORMAT.FLAC_24_96, FORMAT.FLAC_24_192].indexOf(q) >= 0) {
+      self.config.set('download_quality', q);
+      self._qobuzClient = null;
+    }
+  }
+
   if (triggerDirty) self.applyTriggerConfig();
   return self.getQuickState();
 };
@@ -1318,7 +1938,6 @@ AiAutopilot.prototype.playerControl = function (action, value) {
   }
   if (!cmd) return libQ.resolve(self.getQuickState());
 
-  const fetch = require('node-fetch');
   const url = 'http://localhost:3000/api/v1/commands/?cmd=' + cmd;
   const defer = libQ.defer();
   Promise.resolve()

@@ -1,10 +1,10 @@
 {
   "name": "ai_autopilot",
-  "version": "0.1.0",
-  "description": "AI-powered auto-queue for Volumio. Picks the next track from TIDAL/Qobuz based on your taste using Claude/OpenAI, Last.fm, Spotify, or a local model.",
+  "version": "0.2.0",
+  "description": "MusePilot is an AI-powered auto-queue plugin for Volumio. It picks the next track from TIDAL/Qobuz based on your taste using your own LLM key, Ollama, Last.fm, Spotify, or a local model.",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"No tests yet\" && exit 0"
+    "test": "node test/qobuz-request.test.js && node test/download-state.test.js && node test/qobuz-metadata-cache.test.js"
   },
   "author": "Daeyeol <samadhy81@gmail.com>",
   "license": "MIT",
@@ -24,7 +24,7 @@
     "fs-extra": "^10.1.0"
   },
   "volumio_info": {
-    "prettyName": "AI Autopilot",
+    "prettyName": "MusePilot",
     "plugin_type": "music_service",
     "architectures": [
       "amd64",
@@ -38,7 +38,7 @@
       "bookworm"
     ],
     "has_alsa_contribution": false,
-    "details": "Auto-queues the next track based on your listening history. Works with installed TIDAL and Qobuz plugins as the music source. Supports multiple AI back-ends: LLM (Claude/OpenAI), Last.fm, Spotify, or a local recommender.",
-    "changelog": "First release. Volumio 3/4 compatible."
+    "details": "MusePilot auto-queues the next track based on your listening history. Works with installed TIDAL and Qobuz plugins as the music source. Supports user-provided LLM keys, Ollama, Last.fm, Spotify, or a local recommender.",
+    "changelog": "MusePilot rename, Qobuz local cache, cached-file playback controls, public feedback links, and Qobuz cache tests."
   }
 }

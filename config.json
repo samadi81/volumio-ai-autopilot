@@ -181,5 +181,41 @@
   "feedback_use_skip": {
     "type": "boolean",
     "value": false
+  },
+  "download_enabled": {
+    "type": "boolean",
+    "value": false
+  },
+  "download_dir": {
+    "type": "string",
+    "value": "/mnt/INTERNAL/qobuz-tap"
+  },
+  "download_quality": {
+    "type": "number",
+    "value": 7
+  },
+  "qobuz_email": {
+    "type": "string",
+    "value": ""
+  },
+  "qobuz_password": {
+    "type": "string",
+    "value": ""
+  },
+  "qobuz_user_id": {
+    "type": "string",
+    "value": ""
+  },
+  "qobuz_auth_token": {
+    "type": "string",
+    "value": ""
+  },
+  "prefetch_count": {
+    "type": "number",
+    "value": 0
+  },
+  "quiet_mode_enabled": {
+    "type": "boolean",
+    "value": false
   }
 }

@@ -1171,6 +1171,16 @@
           }
         },
         {
+          "id": "open_feedback",
+          "element": "button",
+          "label": "TRANSLATE.OPEN_FEEDBACK",
+          "doc": "TRANSLATE.OPEN_FEEDBACK_DOC",
+          "onClick": {
+            "type": "openUrl",
+            "url": "https://github.com/samadi81/volumio-ai-autopilot/issues/new/choose"
+          }
+        },
+        {
           "id": "like_current",
           "element": "button",
           "label": "TRANSLATE.LIKE_CURRENT",
@@ -1242,6 +1252,132 @@
               "data": {}
             }
           }
+        }
+      ]
+    },
+    {
+      "id": "section_qobuz_downloads",
+      "element": "section",
+      "label": "TRANSLATE.QOBUZ_DOWNLOADS",
+      "icon": "fa-download",
+      "onSave": {
+        "type": "controller",
+        "endpoint": "music_service/ai_autopilot",
+        "method": "saveDownloadSettings"
+      },
+      "saveButton": {
+        "label": "TRANSLATE.SAVE",
+        "data": [
+          "download_enabled",
+          "download_dir",
+          "download_quality",
+          "qobuz_email",
+          "qobuz_password",
+          "qobuz_user_id",
+          "qobuz_auth_token",
+          "qobuz_local_user_json",
+          "prefetch_count",
+          "quiet_mode_enabled"
+        ]
+      },
+      "content": [
+        {
+          "id": "download_enabled",
+          "element": "switch",
+          "label": "TRANSLATE.DOWNLOAD_ENABLED",
+          "doc": "TRANSLATE.DOWNLOAD_ENABLED_DOC",
+          "value": false
+        },
+        {
+          "id": "download_dir",
+          "element": "input",
+          "type": "text",
+          "label": "TRANSLATE.DOWNLOAD_DIR",
+          "doc": "TRANSLATE.DOWNLOAD_DIR_DOC",
+          "value": "/mnt/INTERNAL/qobuz-tap"
+        },
+        {
+          "id": "download_quality",
+          "element": "select",
+          "label": "TRANSLATE.DOWNLOAD_QUALITY",
+          "doc": "TRANSLATE.DOWNLOAD_QUALITY_DOC",
+          "value": { "value": 7, "label": "24-bit <=96kHz FLAC" },
+          "options": [
+            { "value": 5, "label": "MP3 320" },
+            { "value": 6, "label": "16-bit / 44.1kHz FLAC" },
+            { "value": 7, "label": "24-bit <=96kHz FLAC" },
+            { "value": 27, "label": "24-bit >=96kHz FLAC" }
+          ]
+        },
+        {
+          "id": "qobuz_email",
+          "element": "input",
+          "type": "text",
+          "label": "TRANSLATE.QOBUZ_EMAIL",
+          "doc": "TRANSLATE.QOBUZ_CREDENTIALS_DOC",
+          "value": ""
+        },
+        {
+          "id": "qobuz_password",
+          "element": "input",
+          "type": "password",
+          "label": "TRANSLATE.QOBUZ_PASSWORD",
+          "doc": "TRANSLATE.QOBUZ_PASSWORD_DOC",
+          "value": ""
+        },
+        {
+          "id": "qobuz_user_id",
+          "element": "input",
+          "type": "text",
+          "label": "TRANSLATE.QOBUZ_USER_ID",
+          "doc": "TRANSLATE.QOBUZ_USER_ID_DOC",
+          "value": ""
+        },
+        {
+          "id": "qobuz_auth_token",
+          "element": "input",
+          "type": "password",
+          "label": "TRANSLATE.QOBUZ_AUTH_TOKEN",
+          "doc": "TRANSLATE.QOBUZ_AUTH_TOKEN_DOC",
+          "value": ""
+        },
+        {
+          "id": "qobuz_local_user_json",
+          "element": "input",
+          "type": "textarea",
+          "label": "TRANSLATE.QOBUZ_LOCAL_USER_JSON",
+          "doc": "TRANSLATE.QOBUZ_LOCAL_USER_JSON_DOC",
+          "value": ""
+        },
+        {
+          "id": "qobuz_browser_auth",
+          "element": "button",
+          "label": "TRANSLATE.QOBUZ_BROWSER_AUTH",
+          "doc": "TRANSLATE.QOBUZ_BROWSER_AUTH_DOC",
+          "onClick": {
+            "type": "openUrl",
+            "url": "http://volumio.local:8488/qobuz-auth/start"
+          }
+        },
+        {
+          "id": "prefetch_count",
+          "element": "input",
+          "type": "number",
+          "label": "TRANSLATE.PREFETCH_COUNT",
+          "doc": "TRANSLATE.PREFETCH_COUNT_DOC",
+          "value": 0,
+          "attributes": [
+            { "placeholder": "0" },
+            { "min": 0 },
+            { "max": 20 }
+          ]
+        },
+        {
+          "id": "quiet_mode_enabled",
+          "element": "switch",
+          "label": "TRANSLATE.QUIET_MODE",
+          "doc": "TRANSLATE.QUIET_MODE_DOC",
+          "value": false
         }
       ]
     }

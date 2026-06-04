@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Volumio plugin publishing questions
+    url: https://community.volumio.org/t/volumio3-plugins-store-issues-and-discussion/50608
+    about: Use the Volumio Community thread for store submission and review-process questions.

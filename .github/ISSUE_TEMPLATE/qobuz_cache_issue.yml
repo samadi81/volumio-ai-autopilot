@@ -1,0 +1,80 @@
+name: Qobuz local cache issue
+description: Report download, cached-file playback, metadata, or queue-preservation problems
+title: "[Qobuz cache]: "
+labels: ["qobuz", "bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form for Qobuz local download/cache issues. Do not paste Qobuz tokens, passwords, refresh tokens, browser cookies, Local Storage dumps, or signed stream URLs.
+  - type: input
+    id: volumio_version
+    attributes:
+      label: Volumio version
+      placeholder: "Example: Volumio 3.x or 4.x"
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Device and architecture
+      placeholder: "Example: Raspberry Pi 4 arm64"
+    validations:
+      required: true
+  - type: input
+    id: track
+    attributes:
+      label: Track or album
+      description: Artist/title or Qobuz track ID is enough. Do not share signed URLs.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Where does it fail?
+      options:
+        - Token setup
+        - Download
+        - Cached-file playback
+        - Queue preservation
+        - Metadata or album art display
+        - Prefetch
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: official_qobuz
+    attributes:
+      label: Does the same track play in Volumio's official Qobuz plugin?
+      options:
+        - "Yes"
+        - "No"
+        - "Not tested"
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Add a Qobuz track to the queue.
+        2. Press 저장 / 저장▶ / 파일▶.
+        3. See ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized logs
+      description: Remove all tokens, passwords, cookies, Local Storage dumps, and signed URLs before posting.
+      render: text
